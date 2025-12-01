@@ -5,7 +5,7 @@ This represents the 'Norm' behavior the IDS learns.
 """
 import time
 import can
-from lab_config import get_bus
+from bus_config import get_bus
 
 def run_victim():
     bus = get_bus()

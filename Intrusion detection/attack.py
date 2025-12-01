@@ -5,7 +5,7 @@ Floods ID 0x11 to override the legitimate victim.
 """
 import time
 import can
-from lab_config import get_bus
+from bus_config import get_bus
 
 def run_attack():
     bus = get_bus()
