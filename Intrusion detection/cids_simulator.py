@@ -1,8 +1,8 @@
 """
-CIDS FAST SIMULATION V2 (FIXED ALGORITHM)
------------------------------------------
-Fixes the 'offset masking' bug by using the Previous Batch's 
-interval to calculate the Current Batch's offset (Paper Algorithm 1).
+CIDS FIGURE 6/7 REPLICATION (DUAL PLOT + EXTENDED TIME)
+-------------------------------------------------------
+Simulates 'Attack' vs 'No Attack' simultaneously to match
+Figures 6 and 7 in the Cho & Shin (2016) paper.
 """
 
 import matplotlib.pyplot as plt
@@ -10,11 +10,13 @@ import pandas as pd
 import random
 
 # --- CONFIGURATION ---
-TARGET_ID = 0x11
 BATCH_SIZE = 20
 LAMBDA = 0.9995
 K_PARAM = 0.5
 THRESHOLD = 5.0
+# Matches Paper Figure 6: Total 800s, Attack at 400s
+DURATION_TOTAL = 800 
+ATTACK_START_TIME = 400
 
 class CIDS_Detector:
     def __init__(self):
@@ -30,7 +32,7 @@ class CIDS_Detector:
         self.L_plus = 0.0   
         self.L_minus = 0.0  
         
-        # CRITICAL: Store the PREVIOUS batch's average interval
+        # Previous Batch Interval (Paper Algorithm 1 logic)
         self.prev_mu_T = None 
         
         self.log_data = []
@@ -47,27 +49,22 @@ class CIDS_Detector:
         if self.start_time is None:
             self.start_time = self.timestamps[0]
 
-        # 1. Calculate Current Batch Average Interval (mu_T_k)
+        # 1. Calculate Current Batch Average Interval
         intervals = [batch_times[i] - batch_times[i-1] for i in range(1, N)]
         current_mu_T = sum(intervals) / len(intervals)
         
-        # 2. Calculate Offset (O_k)
-        # CRITICAL FIX: Use PREVIOUS mu_T to calculate offsets for CURRENT batch.
-        # If we use current_mu_T, we hide the skew change!
+        # 2. Calculate Offset
+        # Use PREVIOUS mu_T to calculate offsets for CURRENT batch (Alg 1)
         reference_mu_T = self.prev_mu_T if self.prev_mu_T else current_mu_T
         
         t0 = batch_times[0]
-        # Algorithm 1 Line 22: Expected time based on PREVIOUS interval
         offsets = [(batch_times[i] - (t0 + i * reference_mu_T)) for i in range(1, N)]
         avg_offset = sum(offsets) / len(offsets)
         
-        # Update state for next batch
+        # Update state
         self.prev_mu_T = current_mu_T
         
         # 3. Accumulated Offset
-        # Note: We take absolute value as per CIDS generic logic, 
-        # but for Masquerade (skew change), the sign matters for direction.
-        # The paper says O_acc = O_acc + |O[k]|.
         self.O_acc += abs(avg_offset)
         
         # 4. Identification Error
@@ -78,11 +75,11 @@ class CIDS_Detector:
         self.rls_update(t_k, error)
         
         # 6. CUSUM Update
+        # Paper uses dynamic limits, but simple static sigma works for reproduction
         normalized = (error - self.mu_e) / self.sigma_e
         self.L_plus = max(0, self.L_plus + normalized - K_PARAM)
         self.L_minus = max(0, self.L_minus - normalized - K_PARAM)
         
-        # 7. Log
         self.log_data.append({
             "Time_Sec": t_k,
             "Accumulated_Offset_ms": self.O_acc * 1000,
@@ -91,100 +88,143 @@ class CIDS_Detector:
             "L_Minus": self.L_minus
         })
 
-# --- SCENARIO RUNNER ---
+# --- DUAL SCENARIO RUNNER ---
 
-def run_simulation(scenario_name, duration_base, duration_attack, attack_type):
-    print(f"⚡ Simulating {scenario_name}...")
+def run_dual_simulation(attack_type):
+    print(f"⚡ Simulating {attack_type} (With vs Without Attack)...")
     
-    ids = CIDS_Detector()
-    current_time = 0.0
-    batch_buffer = []
+    # We run TWO detectors simultaneously
+    ids_attack = CIDS_Detector() # Will experience the attack
+    ids_normal = CIDS_Detector() # Will stay normal (Ghost line)
     
-    # Lower Jitter for cleaner plots (Real ECUs are stable)
-    JITTER_RANGE = 0.00005 # 50 microseconds
+    # Independent time trackers
+    time_attack = 0.0
+    time_normal = 0.0
     
-    # 1. NORMAL PHASE
-    while current_time < duration_base:
-        jitter = random.uniform(-JITTER_RANGE, JITTER_RANGE)
-        interval = 0.05 + jitter
-        current_time += interval
-        
-        if not ids.timestamps: ids.timestamps.append(current_time)
-        batch_buffer.append(current_time)
-        
-        if len(batch_buffer) >= BATCH_SIZE:
-            ids.process_batch(batch_buffer)
-            batch_buffer = []
+    batch_buf_attack = []
+    batch_buf_normal = []
+    
+    # Last check for suspension timeout logic
+    last_suspension_check = 0.0
+    
+    JITTER_RANGE = 0.00005 # 50us jitter
+    BASE_INTERVAL = 0.05   # 50ms period
 
-    # 2. ATTACK PHASE
-    attack_end_time = duration_base + duration_attack
-    last_suspension_check = current_time
-    
-    while current_time < attack_end_time:
+    # Loop until the ATTACK timeline finishes
+    while time_attack < DURATION_TOTAL:
         
-        if attack_type == "fabrication":
-            # Flooding
-            interval = 0.002
-            current_time += interval
-            batch_buffer.append(current_time)
-            if len(batch_buffer) >= BATCH_SIZE:
-                ids.process_batch(batch_buffer)
-                batch_buffer = []
-
-        elif attack_type == "masquerade":
-            # Skew Change: 0.1% change is enough to detect if logic is right
-            jitter = random.uniform(-JITTER_RANGE, JITTER_RANGE)
-            interval = (0.05 * 0.999) + jitter 
-            current_time += interval
+        # --- 1. GENERATE BASE JITTER ---
+        # We use the same jitter for both lines before the attack 
+        # to ensure they overlap perfectly initially.
+        common_jitter = random.uniform(-JITTER_RANGE, JITTER_RANGE)
+        
+        # --- 2. UPDATE "WITHOUT ATTACK" (NORMAL) LINE ---
+        # Always just adds the normal interval
+        interval_n = BASE_INTERVAL + common_jitter
+        time_normal += interval_n
+        
+        if not ids_normal.timestamps: ids_normal.timestamps.append(time_normal)
+        batch_buf_normal.append(time_normal)
+        
+        if len(batch_buf_normal) >= BATCH_SIZE:
+            ids_normal.process_batch(batch_buf_normal)
+            batch_buf_normal = []
             
-            batch_buffer.append(current_time)
-            if len(batch_buffer) >= BATCH_SIZE:
-                ids.process_batch(batch_buffer)
-                batch_buffer = []
-
-        elif attack_type == "suspension":
-            step = 0.1
-            current_time += step
+        # --- 3. UPDATE "WITH ATTACK" LINE ---
+        
+        # A. Before Attack Start -> Behaves exactly like Normal
+        if time_attack < ATTACK_START_TIME:
+            interval_a = BASE_INTERVAL + common_jitter
+            time_attack += interval_a
             
-            if (current_time - last_suspension_check) > 0.5:
-                fake_time = current_time
-                missing = BATCH_SIZE - len(batch_buffer)
-                for _ in range(missing):
-                    fake_time += 10.0 
-                    batch_buffer.append(fake_time)
-                
-                ids.process_batch(batch_buffer)
-                batch_buffer = [] 
-                last_suspension_check = current_time
-                
-    return pd.DataFrame(ids.log_data)
+            if not ids_attack.timestamps: ids_attack.timestamps.append(time_attack)
+            batch_buf_attack.append(time_attack)
+            
+            if len(batch_buf_attack) >= BATCH_SIZE:
+                ids_attack.process_batch(batch_buf_attack)
+                batch_buf_attack = []
+            
+            last_suspension_check = time_attack
 
-# --- PLOTTING ---
+        # B. After Attack Start -> Apply Attack Logic
+        else:
+            if attack_type == "fabrication":
+                # Fabrication: Inject messages very fast (flooding)
+                # Paper Fig 6a: O_acc shoots up because interval drops drastically
+                interval_a = 0.002 # 2ms injection
+                time_attack += interval_a
+                batch_buf_attack.append(time_attack)
+                
+                if len(batch_buf_attack) >= BATCH_SIZE:
+                    ids_attack.process_batch(batch_buf_attack)
+                    batch_buf_attack = []
 
-def plot_results(df, title, filename):
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+            elif attack_type == "suspension":
+                # Suspension: Stop sending.
+                # The detector waits... time moves forward artificially for the plot
+                step = 0.1
+                time_attack += step # Real world time passes
+                
+                # Logic: If no message for > 0.5s, fill batch with high values (Alg 1)
+                if (time_attack - last_suspension_check) > 0.5:
+                    fake_time = time_attack
+                    missing = BATCH_SIZE - len(batch_buf_attack)
+                    # Fill buffer with massive delays to signify "Lost" messages
+                    for _ in range(missing):
+                        fake_time += 10.0 # Huge interval
+                        batch_buf_attack.append(fake_time)
+                    
+                    ids_attack.process_batch(batch_buf_attack)
+                    batch_buf_attack = []
+                    last_suspension_check = time_attack
+
+    return pd.DataFrame(ids_attack.log_data), pd.DataFrame(ids_normal.log_data)
+
+# --- PLOTTING (MATCHING PAPER STYLE) ---
+
+def plot_paper_figure(df_attack, df_normal, title, filename):
+    # Setup 3 subplots like Figure 6
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
     
-    # Offset
-    ax1.plot(df['Time_Sec'], df['Accumulated_Offset_ms'], color='blue', lw=2)
+    # 1. Accumulated Offset (O_acc)
+    # Dashed Blue/Black = Without Attack
+    ax1.plot(df_normal['Time_Sec'], df_normal['Accumulated_Offset_ms'], 
+             color='navy', linestyle='--', alpha=0.7, label='w/o attack')
+    # Solid Red = With Attack
+    ax1.plot(df_attack['Time_Sec'], df_attack['Accumulated_Offset_ms'], 
+             color='crimson', lw=2, label='w/ attack')
+    
     ax1.set_ylabel(r'$O_{acc}$ [ms]')
-    ax1.set_title(title, fontsize=14, fontweight='bold')
-    ax1.grid(True)
+    ax1.set_title(title + r' ($O_{acc}$)', fontsize=12, fontweight='bold')
+    ax1.legend(loc="upper left")
+    ax1.grid(True, alpha=0.3)
     
-    # Error
-    ax2.plot(df['Time_Sec'], df['Ident_Error_e'], color='purple', lw=1)
-    ax2.set_ylabel(r'Error $e$')
+    # 2. Identification Error (e)
+    ax2.plot(df_normal['Time_Sec'], df_normal['Ident_Error_e'], 
+             color='navy', linestyle='--', alpha=0.3)
+    ax2.plot(df_attack['Time_Sec'], df_attack['Ident_Error_e'], 
+             color='crimson', lw=1.5)
+    
+    ax2.set_ylabel(r'Ident Error $e$')
     ax2.axhline(0, color='black', linestyle='--', lw=0.5)
-    ax2.grid(True)
+    ax2.grid(True, alpha=0.3)
     
-    # CUSUM
-    ax3.plot(df['Time_Sec'], df['L_Plus'], label='$L^+$', color='red', lw=2)
-    ax3.plot(df['Time_Sec'], df['L_Minus'], label='$L^-$', color='green', lw=2, linestyle='--')
+    # 3. Control Limits (L)
+    # Paper Figure 6 plots Upper Control Limit (L+) for Fabrication/Suspension
+    ax3.plot(df_normal['Time_Sec'], df_normal['L_Plus'], 
+             color='navy', linestyle='--', alpha=0.3, label='w/o attack')
+    ax3.plot(df_attack['Time_Sec'], df_attack['L_Plus'], 
+             color='crimson', lw=2, label='w/ attack')
+    
     ax3.axhline(THRESHOLD, color='black', linestyle='-.', label='Threshold')
     
-    ax3.set_ylabel('CUSUM Limits')
+    ax3.set_ylabel(r'Upper Limit $L^+$')
     ax3.set_xlabel('Time [Sec]')
-    ax3.legend(loc='upper left')
-    ax3.grid(True)
+    ax3.legend(loc="upper left")
+    ax3.grid(True, alpha=0.3)
+    
+    # Set X-Axis to match paper (0 to 800)
+    plt.xlim(0, DURATION_TOTAL)
     
     plt.tight_layout()
     plt.savefig(filename)
@@ -192,14 +232,10 @@ def plot_results(df, title, filename):
     plt.close()
 
 if __name__ == "__main__":
-    # Fabrication
-    df1 = run_simulation("Fabrication", 400, 50, "fabrication")
-    plot_results(df1, "Fabrication Attack (Flooding)", "fixed_plot_fabrication.png")
+    # 1. Fabrication Attack (Figure 6a)
+    df_att, df_norm = run_dual_simulation("fabrication")
+    plot_paper_figure(df_att, df_norm, "Fabrication Attack", "figure_6a_replication.png")
     
-    # Suspension
-    df2 = run_simulation("Suspension", 400, 50, "suspension")
-    plot_results(df2, "Suspension Attack (Silence)", "fixed_plot_suspension.png")
-    
-    # Masquerade (Longer duration to show skew accumulation)
-    df3 = run_simulation("Masquerade", 400, 400, "masquerade")
-    plot_results(df3, "Masquerade Attack (Skew Change)", "fixed_plot_masquerade.png")
+    # 2. Suspension Attack (Figure 6b)
+    df_att, df_norm = run_dual_simulation("suspension")
+    plot_paper_figure(df_att, df_norm, "Suspension Attack", "figure_6b_replication.png")
