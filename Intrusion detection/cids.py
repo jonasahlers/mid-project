@@ -1,19 +1,14 @@
-"""
-CIDS (Clock-based IDS) - Updated for Masquerade Detection
-Implements both L+ and L- (Upper and Lower Control Limits).
-Reference: Section 4.2, Equation (4)
-"""
+
 import time
-import can
 from bus_config import get_bus
 
-# PAPER PARAMETERS
+# PARAMETERS
 BATCH_SIZE = 20     
 LAMBDA = 0.9995     
 THRESHOLD = 5.0     
-K_PARAM = 0.5       # The 'drain' parameter (kappa)
+K_PARAM = 0.5       
 
-class CIDS_Detector:
+class CIDS:
     def __init__(self):
         self.P = 100.0      # Covariance
         self.S = 0.0        # Skew (Slope)
@@ -64,25 +59,21 @@ class CIDS_Detector:
         return self.O_acc, error
 
     def check_cusum(self, error):
-        """
-        CUSUM Logic (Equation 4 in Paper)
-        Checks both L+ (Positive Shift) and L- (Negative Shift)
-        """
+        
         normalized = (error - self.mu_e) / self.sigma_e
         
-        # Update L+ (Detects if Error shoots UP)
+        # Update L+
         self.L_plus = max(0, self.L_plus + normalized - K_PARAM)
         
-        # Update L- (Detects if Error shoots DOWN - Common in Masquerade)
-        # Note: We subtract normalized error here.
+        # Update L- 
         self.L_minus = max(0, self.L_minus - normalized - K_PARAM)
         
         return self.L_plus, self.L_minus
 
 def run_cids():
     bus = get_bus()
-    ids = CIDS_Detector()
-    print("🛡️  CIDS Active. Monitoring ID 0x11 (L+ and L-)...")
+    ids = CIDS()
+    print("CIDS Active. Monitoring ID 0x11 both negative and positive shifts")
     
     batch_buffer = []
     
@@ -100,13 +91,13 @@ def run_cids():
                 
                 # Print output
                 status = f"L+: {L_plus:.2f} | L-: {L_minus:.2f}"
-                print(f"📊 O_acc: {O_acc:.4f} | Error: {error:.4f} | {status}")
+                print(f"O_acc: {O_acc:.4f} | Error: {error:.4f} | {status}")
                 
                 # DETECTION LOGIC
                 if L_plus > THRESHOLD:
-                    print("   🚨 INTRUSION DETECTED (Positive Shift - Likely Fabrication)")
+                    print("INTRUSION DETECTED (Positive Shift )")
                 elif L_minus > THRESHOLD:
-                    print("   🚨 INTRUSION DETECTED (Negative Shift - Likely Masquerade)")
+                    print("INTRUSION DETECTED (Negative Shift )")
                 
                 batch_buffer = []
 

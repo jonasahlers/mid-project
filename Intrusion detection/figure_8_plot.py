@@ -11,7 +11,7 @@ THRESHOLD = 5.0
 DURATION_NORMAL = 400
 DURATION_ATTACK = 400 
 
-class CIDS_Detector:
+class CIDS:
     def __init__(self):
         self.P = 100.0      
         self.S = 0.0        
@@ -19,7 +19,6 @@ class CIDS_Detector:
         self.timestamps = []
         self.start_time = None
         
-        # Adaptive Statistics
         self.mu_e = 0.0     
         self.sigma_e = 0.001 
         
@@ -108,7 +107,7 @@ class CIDS_Detector:
         })
 
 def run_masquerade_simulation():
-    ids = CIDS_Detector()
+    ids = CIDS()
     current_time = 0.0
     ghost_time = 0.0
     
@@ -156,7 +155,6 @@ def run_masquerade_simulation():
     end_time = DURATION_NORMAL + DURATION_ATTACK
     
     # We remove the simulation logic that forced the delay here.
-    # The simulation runs "smoothly" to keep Plot 3 correct.
     while current_time < end_time:
         jitter = random.uniform(-JITTER, JITTER)
         

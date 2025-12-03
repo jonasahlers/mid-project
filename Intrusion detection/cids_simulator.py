@@ -1,10 +1,3 @@
-"""
-CIDS FIGURE 6/7 REPLICATION (DUAL PLOT + EXTENDED TIME)
--------------------------------------------------------
-Simulates 'Attack' vs 'No Attack' simultaneously to match
-Figures 6 and 7 in the Cho & Shin (2016) paper.
-"""
-
 import matplotlib.pyplot as plt
 import pandas as pd
 import random
@@ -14,11 +7,11 @@ BATCH_SIZE = 20
 LAMBDA = 0.9995
 K_PARAM = 0.5
 THRESHOLD = 5.0
-# Matches Paper Figure 6: Total 800s, Attack at 400s
+
 DURATION_TOTAL = 800 
 ATTACK_START_TIME = 400
 
-class CIDS_Detector:
+class CIDS:
     def __init__(self):
         self.P = 100.0      
         self.S = 0.0        
@@ -35,6 +28,7 @@ class CIDS_Detector:
         # Previous Batch Interval (Paper Algorithm 1 logic)
         self.prev_mu_T = None 
         
+        # Data Logging
         self.log_data = []
 
     def rls_update(self, t, error):
@@ -54,14 +48,13 @@ class CIDS_Detector:
         current_mu_T = sum(intervals) / len(intervals)
         
         # 2. Calculate Offset
-        # Use PREVIOUS mu_T to calculate offsets for CURRENT batch (Alg 1)
         reference_mu_T = self.prev_mu_T if self.prev_mu_T else current_mu_T
         
         t0 = batch_times[0]
         offsets = [(batch_times[i] - (t0 + i * reference_mu_T)) for i in range(1, N)]
         avg_offset = sum(offsets) / len(offsets)
         
-        # Update state
+        # Update state of mu_T
         self.prev_mu_T = current_mu_T
         
         # 3. Accumulated Offset
@@ -75,7 +68,6 @@ class CIDS_Detector:
         self.rls_update(t_k, error)
         
         # 6. CUSUM Update
-        # Paper uses dynamic limits, but simple static sigma works for reproduction
         normalized = (error - self.mu_e) / self.sigma_e
         self.L_plus = max(0, self.L_plus + normalized - K_PARAM)
         self.L_minus = max(0, self.L_minus - normalized - K_PARAM)
@@ -88,14 +80,13 @@ class CIDS_Detector:
             "L_Minus": self.L_minus
         })
 
-# --- DUAL SCENARIO RUNNER ---
-
+# --- run fabrication and suspension attack for plot ---
 def run_dual_simulation(attack_type):
-    print(f"⚡ Simulating {attack_type} (With vs Without Attack)...")
+    print(f"Simulating {attack_type} (With vs Without Attack)...")
     
     # We run TWO detectors simultaneously
-    ids_attack = CIDS_Detector() # Will experience the attack
-    ids_normal = CIDS_Detector() # Will stay normal (Ghost line)
+    ids_attack = CIDS() # Will experience the attack
+    ids_normal = CIDS() # Will stay normal without attack
     
     # Independent time trackers
     time_attack = 0.0
@@ -113,13 +104,10 @@ def run_dual_simulation(attack_type):
     # Loop until the ATTACK timeline finishes
     while time_attack < DURATION_TOTAL:
         
-        # --- 1. GENERATE BASE JITTER ---
-        # We use the same jitter for both lines before the attack 
-        # to ensure they overlap perfectly initially.
+        # 1. GENERATE BASE JITTER 
         common_jitter = random.uniform(-JITTER_RANGE, JITTER_RANGE)
         
-        # --- 2. UPDATE "WITHOUT ATTACK" (NORMAL) LINE ---
-        # Always just adds the normal interval
+        # 2. "WITHOUT ATTACK" line, Always just adds the normal interval
         interval_n = BASE_INTERVAL + common_jitter
         time_normal += interval_n
         
@@ -130,9 +118,8 @@ def run_dual_simulation(attack_type):
             ids_normal.process_batch(batch_buf_normal)
             batch_buf_normal = []
             
-        # --- 3. UPDATE "WITH ATTACK" LINE ---
-        
-        # A. Before Attack Start -> Behaves exactly like Normal
+        #  3. "WITH ATTACK" line 
+        # Before attack is launched 
         if time_attack < ATTACK_START_TIME:
             interval_a = BASE_INTERVAL + common_jitter
             time_attack += interval_a
@@ -146,11 +133,10 @@ def run_dual_simulation(attack_type):
             
             last_suspension_check = time_attack
 
-        # B. After Attack Start -> Apply Attack Logic
+        # After Attack is launched 
         else:
             if attack_type == "fabrication":
-                # Fabrication: Inject messages very fast (flooding)
-                # Paper Fig 6a: O_acc shoots up because interval drops drastically
+                # Fabrication attack: Inject messages very fast (flooding)
                 interval_a = 0.002 # 2ms injection
                 time_attack += interval_a
                 batch_buf_attack.append(time_attack)
@@ -160,8 +146,7 @@ def run_dual_simulation(attack_type):
                     batch_buf_attack = []
 
             elif attack_type == "suspension":
-                # Suspension: Stop sending.
-                # The detector waits... time moves forward artificially for the plot
+                # Suspension attack: Stop sending messages.
                 step = 0.1
                 time_attack += step # Real world time passes
                 
@@ -180,7 +165,7 @@ def run_dual_simulation(attack_type):
 
     return pd.DataFrame(ids_attack.log_data), pd.DataFrame(ids_normal.log_data)
 
-# --- PLOTTING (MATCHING PAPER STYLE) ---
+# --- PLOTTING ---
 
 def plot_paper_figure(df_attack, df_normal, title, filename):
     # Setup 3 subplots like Figure 6
