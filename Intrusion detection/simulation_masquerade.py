@@ -154,7 +154,6 @@ def run_masquerade_simulation():
     # 2. ATTACK PHASE
     end_time = DURATION_NORMAL + DURATION_ATTACK
     
-    # We remove the simulation logic that forced the delay here.
     while current_time < end_time:
         jitter = random.uniform(-JITTER, JITTER)
         
@@ -177,13 +176,7 @@ def run_masquerade_simulation():
             ids.log_data[-1]["Ghost_Viz"] = ghost_accumulated_total
             batch_buffer = []
             ghost_buffer = []
-    
-    # --- VISUAL CHEAT ---
-    # We manually inject the "mistimed" blip into the histogram data ONLY.
-    # This ensures Plot 1 looks like the paper, but Plot 3 stays smooth.
-    if intervals_attack:
-        intervals_attack[0] = 51.04 # Force the outlier visual
-            
+           
     return pd.DataFrame(ids.log_data), intervals_normal, intervals_attack
 
 def plot_figure_8_final(df, intervals_normal, intervals_attack):
